@@ -1,167 +1,239 @@
-
 # app.py
-# pip install streamlit
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
 import re
-from io import StringIO
 from statsmodels.tsa.seasonal import seasonal_decompose
 import plotly.graph_objects as go
+from io import StringIO
 
-# -----------------------------------
-# 1. App configuration
-# -----------------------------------
-st.set_page_config(page_title="Sea Level Monitoring App", layout="wide")
+st.set_page_config(page_title="Sea Level Monitoring App (PSMSL)", layout="wide")
 
-# Base URL for RLR monthly data from PSMSL
+# ----------------------------------------------------
+# URLs + Headers
+# ----------------------------------------------------
+PSMSL_STATION_LIST_URL = "https://psmsl.org/data/obtaining/stations.lst"
 PSMSL_RLR_MONTHLY_URL = "https://psmsl.org/data/obtaining/rlr.monthly.data/{sid}.rlrdata"
 
-# -----------------------------------
-# 2. Function: Fetch data from PSMSL
-# -----------------------------------
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    )
+}
+
+# ----------------------------------------------------
+# Fetch Station Metadata
+# ----------------------------------------------------
+@st.cache_data(ttl=3600)
+def fetch_station_metadata():
+    resp = requests.get(PSMSL_STATION_LIST_URL, headers=REQUEST_HEADERS, timeout=20)
+    if resp.status_code != 200:
+        raise ValueError(f"Failed to fetch station list. Status: {resp.status_code}")
+
+    station_map = {}
+
+    for line in resp.text.splitlines():
+        if not line.strip():
+            continue
+        if not line[0].isdigit():
+            continue
+
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+
+        sid = parts[0]
+        name = " ".join(parts[4:])
+        name = re.sub(r'\s+', ' ', name)
+        station_map[sid] = name
+
+    if not station_map:
+        raise ValueError("Station list parsed but no stations found.")
+
+    return station_map
+
+# ----------------------------------------------------
+# Fetch Individual Station Data
+# ----------------------------------------------------
 @st.cache_data(ttl=3600)
 def fetch_rlr_monthly(station_id: str):
     url = PSMSL_RLR_MONTHLY_URL.format(sid=station_id)
-    response = requests.get(url, timeout=20)
+    resp = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
 
-    if response.status_code != 200:
-        raise ValueError("Failed to fetch data. Check station ID or network connection.")
+    if resp.status_code != 200:
+        raise ValueError(f"Failed to fetch data for station {station_id}")
 
-    text = response.text.strip()
-    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith('#')]
+    text = resp.text
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
     rows = []
 
     for line in lines:
         parts = re.split(r"[;,\s]+", line.strip())
-        numeric = [p for p in parts if re.match(r"^-?\d+(\.\d+)?$", p)]
-        if len(numeric) >= 2:
-            date_dec = float(numeric[0])
-            value = float(numeric[1])
-            if value == -99999:
-                value = np.nan
-            rows.append((date_dec, value))
+        nums = [p for p in parts if re.match(r"^-?\d+(\.\d+)?$", p)]
+
+        if len(nums) >= 2:
+            dec = float(nums[0])
+            val = float(nums[1])
+            if val == -99999:
+                val = np.nan
+            rows.append((dec, val))
 
     if not rows:
-        raise ValueError("No data parsed. The station might not exist or is missing monthly data.")
+        raise ValueError(f"No valid monthly data for station {station_id}")
 
-    df = pd.DataFrame(rows, columns=["decimal_year", "msl_mm"])
+    df = pd.DataFrame(rows, columns=["dec", "msl_mm"])
 
-    # Convert decimal year to datetime
-    def decimal_to_datetime(dec):
-        year = int(np.floor(dec))
-        month = int(round((dec - year) * 12 + 0.5))
-        month = max(1, min(12, month))
-        return pd.Timestamp(year=year, month=month, day=15)
+    def convert(dec):
+        yr = int(np.floor(dec))
+        mo = int(round((dec - yr) * 12 + 0.5))
+        mo = max(1, min(mo, 12))
+        return pd.Timestamp(year=yr, month=mo, day=15)
 
-    df["date"] = df["decimal_year"].apply(decimal_to_datetime)
-    df.set_index("date", inplace=True)
+    df["date"] = df["dec"].apply(convert)
+    df = df.set_index("date").sort_index()
+
     return df[["msl_mm"]]
 
-# -----------------------------------
-# 3. Function: Compute linear trend
-# -----------------------------------
+# ----------------------------------------------------
+# Compute Trend
+# ----------------------------------------------------
 def compute_linear_trend(df):
     df_valid = df.dropna()
-    x = df_valid.index.year + (df_valid.index.month - 0.5) / 12.0
+    if df_valid.empty:
+        raise ValueError("Not enough data for trend.")
+
+    x = df_valid.index.year + (df_valid.index.month - 0.5) / 12
     y = df_valid["msl_mm"].values
-    slope, intercept = np.polyfit(x, y, 1)  # slope in mm/year
 
-    # Generate trend line for plotting
-    x_all = df.index.year + (df.index.month - 0.5) / 12.0
-    trend = intercept + slope * x_all
-    return slope, intercept, pd.Series(trend, index=df.index)
+    slope, intercept = np.polyfit(x, y, 1)
+    x_all = df.index.year + (df.index.month - 0.5) / 12
+    trend_series = intercept + slope * x_all
 
-# -----------------------------------
-# 4. Function: Plot interactive graph
-# -----------------------------------
-def plot_sea_level(df, trend_series, station_name):
+    return slope, pd.Series(trend_series, index=df.index)
+
+# ----------------------------------------------------
+# Multi-station Plot
+# ----------------------------------------------------
+def plot_multi_station(data_dict):
     fig = go.Figure()
 
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["msl_mm"],
-        mode='lines', name='Monthly Mean Sea Level (mm)',
-        line=dict(color='royalblue')
-    ))
+    for sid, info in data_dict.items():
+        df = info["df"]
+        trend = info["trend"]
+        name = info["name"]
 
-    fig.add_trace(go.Scatter(
-        x=trend_series.index, y=trend_series,
-        mode='lines', name='Linear Trend',
-        line=dict(color='red')
-    ))
+        fig.add_trace(go.Scatter(
+            x=df.index,
+            y=df["msl_mm"],
+            mode="lines",
+            name=f"{name} ({sid})"
+        ))
 
-    rolling = df["msl_mm"].rolling(12, center=True).mean()
-    fig.add_trace(go.Scatter(
-        x=rolling.index, y=rolling,
-        mode='lines', name='12-Month Rolling Mean',
-        line=dict(dash='dash', color='green')
-    ))
+        fig.add_trace(go.Scatter(
+            x=trend.index,
+            y=trend,
+            mode="lines",
+            line=dict(dash="dash"),
+            name=f"Trend — {name} ({sid})"
+        ))
 
     fig.update_layout(
-        title=f"Sea Level Trend - {station_name}",
+        title="Sea Level Comparison Across Tide Gauges",
         xaxis_title="Year",
-        yaxis_title="Mean Sea Level (mm, RLR datum)",
-        template="plotly_white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        yaxis_title="Sea Level (mm)",
+        template="plotly_white"
     )
+
     return fig
 
-# -----------------------------------
-# 5. Streamlit UI
-# -----------------------------------
-st.title("🌊 Regional Sea Level Monitoring App (PSMSL)")
-st.markdown("""
-This app visualizes monthly sea level changes for **one tide gauge location** using data from the 
-[Permanent Service for Mean Sea Level (PSMSL)](https://psmsl.org/data/obtaining/).
+# ----------------------------------------------------
+# Initialize station_map safely
+# ----------------------------------------------------
+station_map = {}
+all_ids = []
 
-**Instructions:**
-1. Enter a valid PSMSL Station ID (e.g., `202` for Newlyn, UK).
-2. Click **Fetch Data** to download and visualize the tide gauge data.
-3. Explore sea-level trends, rolling averages, and seasonal components.
-""")
+try:
+    station_map = fetch_station_metadata()
+    all_ids = sorted(station_map.keys(), key=lambda s: int(s))
+except Exception as e:
+    st.error(f"❌ Unable to fetch PSMSL station list: {e}")
+    st.stop()
 
-# User inputs
-station_id = st.text_input("Enter PSMSL Station ID (e.g., 202):", "202")
-station_name = st.text_input("Enter Station Name (optional):", "Newlyn, UK")
+# ----------------------------------------------------
+# Streamlit UI
+# ----------------------------------------------------
+st.title("🌊 PSMSL Sea Level Monitoring (Live Data)")
 
-if st.button("🔎 Fetch Data"):
-    try:
-        with st.spinner("Fetching data from PSMSL..."):
-            df = fetch_rlr_monthly(station_id.strip())
+st.subheader("Select one or more stations")
 
-        st.success(f"Data fetched successfully! {len(df)} monthly records available.")
-        st.write("**Preview of the dataset:**")
-        st.dataframe(df.head(10))
+selected_ids = st.multiselect(
+    "Choose station IDs:",
+    options=all_ids,
+    format_func=lambda sid: f"{sid} — {station_map[sid]}"
+)
 
-        # Trend calculation
-        slope, intercept, trend_series = compute_linear_trend(df)
-        st.metric("📈 Linear Trend", f"{slope:.3f} mm/year")
+if not selected_ids:
+    st.info("Select at least one station to continue.")
+    st.stop()
 
-        # Plot data
-        fig = plot_sea_level(df, trend_series, station_name)
-        st.plotly_chart(fig, use_container_width=True)
+# ----------------------------------------------------
+# Fetch & Plot Data
+# ----------------------------------------------------
+if st.button("Fetch and Plot"):
+    data_dict = {}
+    errors = []
 
-        # Seasonal Decomposition
-        st.subheader("🔎 Seasonal Decomposition (Trend + Seasonal + Residual)")
-        df_interp = df.interpolate()
-        result = seasonal_decompose(df_interp["msl_mm"], period=12, model="additive", extrapolate_trend='freq')
+    for sid in selected_ids:
+        try:
+            df = fetch_rlr_monthly(sid)
+            slope, trend = compute_linear_trend(df)
+            data_dict[sid] = {
+                "df": df,
+                "trend": trend,
+                "slope": slope,
+                "name": station_map[sid]
+            }
+        except Exception as e:
+            errors.append((sid, str(e)))
 
-        st.line_chart(pd.DataFrame({
-            "Observed": result.observed,
-            "Trend": result.trend,
-            "Seasonal": result.seasonal,
-            "Residual": result.resid
-        }))
+    for sid, msg in errors:
+        st.error(f"{sid}: {msg}")
 
-        # CSV download option
-        csv = df.to_csv()
-        st.download_button(
-            label="📥 Download CSV Data",
-            data=csv,
-            file_name=f"psmsl_station_{station_id}.csv",
-            mime="text/csv"
+    if not data_dict:
+        st.error("No valid data to plot.")
+        st.stop()
+
+    fig = plot_multi_station(data_dict)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Linear Trends (mm/year)")
+    cols = st.columns(3)
+    i = 0
+    for sid, info in data_dict.items():
+        cols[i % 3].metric(
+            f"{info['name']} ({sid})",
+            f"{info['slope']:.3f}"
         )
+        i += 1
 
-    except Exception as e:
-        st.error(f"❌ Error: {e}")
+    if len(data_dict) == 1:
+        sid = list(data_dict.keys())[0]
+        st.subheader(f"Seasonal Decomposition — {data_dict[sid]['name']} ({sid})")
+
+        df_interp = data_dict[sid]["df"].interpolate()
+
+        try:
+            result = seasonal_decompose(df_interp["msl_mm"], period=12, model="additive")
+            st.line_chart(pd.DataFrame({
+                "Observed": result.observed,
+                "Trend": result.trend,
+                "Seasonal": result.seasonal,
+                "Residual": result.resid
+            }))
+        except:
+            st.warning("Not enough data for seasonal decomposition.")
+
+    st.success("Done!")
