@@ -2,9 +2,9 @@
 pandas
 numpy
 requests
-re
 statsmodels
 plotly
-io
+
+
 
 
