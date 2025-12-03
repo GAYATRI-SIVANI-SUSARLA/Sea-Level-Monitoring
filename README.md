@@ -216,7 +216,7 @@ Sea-Level-Monitoring/
 ## Contact
 
 **Developer:** Gayatri Sivani Susarla  
-**University:** Stony Brook University
+**University:** Stony Brook University    
 **GitHub:** https://github.com/GAYATRI-SIVANI-SUSARLA  
 **Repository:** https://github.com/GAYATRI-SIVANI-SUSARLA/Sea-Level-Monitoring        
 **LinkedIn:** https://www.linkedin.com/in/gayatri-sivani-susarla-975856263/
