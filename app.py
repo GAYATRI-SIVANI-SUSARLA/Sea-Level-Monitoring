@@ -26,12 +26,13 @@ STATION_DATABASE = {
     "1551": "OSLO", "1560": "STOCKHOLM", "1571": "HELSINKI",
     "1619": "COPENHAGEN", "1639": "GDANSK", "1657": "ST. PETERSBURG",
     "1196": "REYKJAVIK", "1800": "GENOA", "24": "ABERDEEN", "25": "NORTH SHIELDS",
-    # North America
+    # North America - East Coast
     "12": "SAN FRANCISCO", "13": "BALTIMORE", "22": "KEY WEST",
     "50": "SEATTLE", "135": "PORTLAND (MAINE)", "366": "GALVESTON",
     "1072": "SITKA", "1703": "BOSTON", "1820": "NEW YORK (THE BATTERY)",
     "2039": "ATLANTIC CITY", "2080": "CHARLESTON", "2311": "GALVESTON II",
     "2440": "SAN DIEGO", "2595": "LOS ANGELES", "2619": "HONOLULU",
+    "519": "MONTAUK", "20": "EASTPORT", "368": "SANDY HOOK", "531": "PROVIDENCE",
     # South America
     "1214": "BUENOS AIRES", "1305": "RIO DE JANEIRO",
     # Africa
@@ -53,18 +54,31 @@ def get_station_name(station_id, data_text=None):
     if station_id in STATION_DATABASE:
         return STATION_DATABASE[station_id]
     
-    # Extract from data file header
+    # Extract from data file header - improved extraction
     if data_text:
-        for line in data_text.splitlines():
-            if line.startswith('#') and ';' in line:
-                clean_line = line.replace('#', '').strip()
-                parts = clean_line.split(';')
-                if len(parts) > 0:
-                    name_part = parts[0].strip()
-                    name_part = name_part.split('(')[0].strip()
-                    if name_part and len(name_part) > 1:
-                        if not name_part.replace(' ', '').replace('.', '').replace(',', '').isdigit():
-                            return name_part.upper()
+        lines = data_text.splitlines()
+        for line in lines[:20]:  # Check first 20 lines for header
+            if line.strip().startswith('#'):
+                # Remove # and get content
+                content = line.replace('#', '').strip()
+                
+                # Look for patterns like "STATION_NAME; coordinates; other_info"
+                if ';' in content:
+                    parts = content.split(';')
+                    if len(parts) >= 1:
+                        potential_name = parts[0].strip()
+                        
+                        # Clean up the name
+                        potential_name = potential_name.split('(')[0].strip()  # Remove parentheses content
+                        potential_name = potential_name.split('[')[0].strip()  # Remove bracket content
+                        
+                        # Validate it's actually a name (not coordinates, numbers, or metadata)
+                        if potential_name and len(potential_name) >= 3:
+                            # Check it's not just numbers or coordinates
+                            if not potential_name.replace(' ', '').replace('.', '').replace('-', '').replace(',', '').isdigit():
+                                # Check it doesn't look like coordinates (e.g., "50 06N")
+                                if not any(coord in potential_name.upper() for coord in ['N ', 'S ', 'E ', 'W ', ' N', ' S', ' E', ' W']):
+                                    return potential_name.upper()
     
     return f"STATION {station_id}"
 
@@ -206,15 +220,30 @@ def plot_sea_level_multi(data_dict, show_trends=True, show_rolling=True):
 # ----------------------------------- 
 # 6. Streamlit UI
 # ----------------------------------- 
+
 st.title("🌊 Sea Level Monitoring App (PSMSL)")
 
 st.markdown("""
-Compare sea level trends from multiple tide gauge stations worldwide using data from 
-[PSMSL](https://psmsl.org/). Select stations and visualize trends automatically.
+Compare sea level trends from **ANY** tide gauge station worldwide using data from the 
+[Permanent Service for Mean Sea Level (PSMSL)](https://psmsl.org/).
+
+**How to use:**
+- Enter ANY PSMSL station ID (1 to 2000+) - station names are automatically fetched!
+- Or select from popular stations dropdown
+- Compare 2-6 stations for optimal visualization
+- The app works with all 1000+ PSMSL tide gauge stations globally
 """)
 
 # Station Selection
 st.subheader("📍 Select Tide Gauge Stations")
+
+st.info("""
+💡 **This app works with ALL 1000+ PSMSL stations!** 
+- Popular stations are pre-loaded in the dropdown below
+- For ANY other station: Just enter the Station ID number directly
+- Station names are **automatically fetched** from PSMSL data files
+- Don't know the station ID? Check the [PSMSL Station Map](https://psmsl.org/data/obtaining/map.html)
+""")
 
 col1, col2 = st.columns([3, 1])
 
@@ -225,7 +254,7 @@ with col1:
     selected_names = st.multiselect(
         "Search and select stations:",
         options=sorted(popular_options.keys()),
-        default=["NEWLYN (ID: 202)", "BREST (ID: 1)", "SAN FRANCISCO (ID: 12)"],
+        default=["BREST (ID: 1)", "SAN FRANCISCO (ID: 12)", "NEWLYN (ID: 202)", "MONTAUK (ID: 519)", "BOSTON (ID: 1703)", "SYDNEY (FORT DENISON) (ID: 679)"],
         help="Select multiple stations to compare"
     )
     
@@ -248,8 +277,8 @@ with col2:
     st.caption("Europe: 1, 202, 229")
     st.caption("Americas: 12, 22, 1214")
     st.caption("Asia: 367, 850, 1402")
-    st.caption("Oceania: 679, 680")
-    st.info("💡 Best: 2-6 stations")
+    st.caption("Oceania: 656, 679, 680")
+    st.info("💡 **Tip:** Select 2-6 stations for best comparison results, and also try adding Station ID's to see the trends at different locations")
 
 # Options
 col_a, col_b = st.columns(2)
@@ -401,3 +430,4 @@ st.markdown("""
     RLR Monthly Mean Sea Level Data</p>
 </div>
 """, unsafe_allow_html=True)
+
