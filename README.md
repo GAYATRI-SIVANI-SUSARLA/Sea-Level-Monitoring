@@ -75,7 +75,7 @@ Live Application: https://sea-level-monitor.streamlit.app/
 
 ```bash
 # Clone repository
-git clone (https://github.com/GAYATRI-SIVANI-SUSARLA/Sea-Level-Monitoring).git
+git clone https://github.com/GAYATRI-SIVANI-SUSARLA/Sea-Level-Monitoring.git
 cd sea-level-monitoring
 
 # Install dependencies
