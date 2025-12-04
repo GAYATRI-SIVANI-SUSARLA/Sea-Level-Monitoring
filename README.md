@@ -6,7 +6,7 @@ Live Application: https://sea-level-monitor.streamlit.app/
 ## Key Functions
 
 ### 1. Multi-Station Comparison
-- **Compare up to 6 stations simultaneously** on a single interactive chart
+- **Compare at least 6 or more stations simultaneously** on a single interactive chart
 - **Default stations pre-loaded:** Brest (France), San Francisco (USA), Newlyn (UK), Montauk (USA), Boston (USA), and Sydney (Australia)
 - View sea level trends from different geographical locations side-by-side
 - Each station displays with unique color coding for easy identification
